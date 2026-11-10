@@ -1,151 +1,220 @@
-# 🚀 megadata_rs: The Ultimate LLM Data Pipeline Engine
+# megadata_rs: The Ultimate LLM Data Pipeline Engine
+
+**English** | [简体中文](README.zh-CN.md)
 
 [![Rust](https://img.shields.io/badge/Rust-1.85+-orange.svg)](https://www.rust-lang.org)
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org)
 [![PyO3](https://img.shields.io/badge/Binding-PyO3-red.svg)](https://github.com/PyO3/pyo3)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-`megadata_rs` 是专为万卡级大规模语言模型（LLM）与多模态模型（VLM）训练打造的 **Rust 原生极速数据流转引擎**。
-它旨在彻底终结大模型训练中因 `JSON 解析、Python GIL、多进程 IPC 拷贝、磁盘 I/O 拥塞` 而导致的 GPU 空转与算力浪费问题，提供从海量原始数据到 GPU Tensor 的**绝对零内存拷贝（Zero-Copy）**极限吞吐解决方案。
+`megadata_rs` is a **Rust-native, zero-copy data pipeline engine** for LLM and
+VLM training at cluster scale. It removes the usual causes of GPU starvation —
+JSON parsing, the Python GIL, IPC copies between dataloader processes, and
+disk I/O congestion — and moves samples from raw corpora to GPU tensors with
+**zero memory copies** in between.
 
-## ✨ 核心特性 (Key Features)
+## Key Features
 
-*   🚀 **双模打包引擎 (Dual Packing Engine)**
-    *   **SFT 模式**: 原生支持 HuggingFace ChatML 等模板渲染。使用 Document-Aware 二维装箱算法，精准生成 `-100` 掩码，并输出 `cu_seqlens` 供 FlashAttention 2 无缝调用，消除交叉 Attention 幻觉。
-    *   **PT 模式**: 采用 Greedy Packing 贪心算法无缝拼接海量预训练语料，极限压榨 MFU（算力利用率）。PT 的有效 token 流跨文档无缝、不丢不重；但若训练循环按整张 `(B,S)` 算 loss，须用 `cu_seqlens` 把 eos 填充位（收尾未满 batch）截出监督，或改用 varlen attention。
-    *   ⚠️ **PT 长文档会被跨 batch 切分**：超过 `batch_size × max_seq_len` 的文档被连续铺到多个 batch，每段在 `cu_seqlens` 中各自成段——数据不丢，但 varlen 训练下**跨 batch 上下文被静默切断**。构建期会汇总 WARN 并把切分统计写入 `index.json`（`global_stats.split_docs` / `split_tokens`），加载时再 WARN 一次；对策是把 `max_seq_len` 设到覆盖绝大多数文档（详见使用指南 §4.5）。
-*   ⚡ **极限零拷贝 (Zero-Copy FFI)**
-    *   通过自研 **DLPack C ABI** 和 **Arrow C Data Interface**，将 Rust 堆内存在 $O(1)$ 时间内转移给 PyTorch Tensor。无论多大的 Batch，Python 端都不发生哪怕 1 Byte 的数据拷贝。
-*   🎛️ **动态多源打碟机 (Temperature Mixer)**
-    *   告别静态混洗数据。支持运行时挂载多个数据流（如 Code/Math/Web），基于**温度采样算法 (Temperature Scaling)** 在底层异步并发抽样，平滑控制模型知识配比。
-*   🛡️ **确定性分片与秒级断点续训 (MMP Protocol)**
-    *   无需中心化 RPC 通信，千卡集群基于确定性 PRNG + 轮询分配（round-robin）自动划分 Shard（分片），同 epoch 内所有 rank 看到的分片序列完全一致、可复现。
-    *   劫持底层 PRNG 随机数发生器与文件偏移量，支持**毫秒级恢复宕机状态**（100% 还原跨源抽取顺序）。
-*   🧰 **生产级控制面 (Production Control Plane，借鉴 streaming 设计)**
-    *   **Shard 聚合**：单个 shard 文件聚合 N 个 batch（默认按 ~128MB/shard 自动），文件数从"每 batch 一个"降到几百个；加载端强校验 `shard 数 >= world_size`，杜绝大集群 rank 空转。
-    *   **完整性校验**：每个 shard 写完回读 sha256 记入 `index.json`；云端下载原子写（`.tmp` + rename）+ 下载后强制校验 + 失败删缓存重下 + 指数退避重试（带抖动）+ 跨进程单飞（flock）+ LRU 有界缓存（`MEGADATA_CACHE_LIMIT`）。**本地数据集默认不校验**（零开销），可用 `MEGADATA_VERIFY_LOCAL=1` 开启全量、`=sample:P` 按比例抽样（结果按 size+mtime 缓存，同一文件只 hash 一次）。
-    *   **错误不静默**：IO / 解压 / 数据损坏一律抛 `OSError`（消息含 shard 名 + batch 下标），不会被当成"读完"或无限重试挂住训练；本地读带**有限次重试**（2 次，50/200ms 退避，瞬时半截文件可自愈），重试用尽才上报；EOF 与用户取消仍按正常结束处理，且 EOF 后 reader 保持存活以支撑续训 Seek。
-    *   **预取线程 panic 也会上报**（不降级成"读完"）：后台预取线程体包 `catch_unwind`，任何 panic（含锁中毒）都会被记为致命错误抛给消费端，而不是静默截断本轮数据。
-    *   **可选压缩**：PT 裸流 per-batch zstd frame（`Zstd-MDS`，保留 O(1) 随机寻址）——**默认开启**（真实语料 benchmark：151k 词表压缩到 42%，解压 629MB/s，随机访问 +103µs；`compression="none"` 关闭）；SFT 走 Arrow IPC 原生 zstd/lz4（显式开启）。
-    *   ⚠️ `batches_per_shard` 自动档位按**未压缩**字节算（PT+zstd 实际落盘约为其42%），做磁盘容量规划时按 0.42 倍估算。
-    *   **预取滑窗节流**：`predownload` 参数限制在途预取 batch 数（默认 16），削平 IO 突刺并约束预取内存上限。
-    *   **置换表 Shuffle**：Rust 侧按 (seed, epoch) 生成 batch 级确定性置换表，`state_dict` 从 GB 级 buffer 缩到几十字节，天然跨进程可复现。
-    *   **弹性扩缩容**：`relaxed` 分区 + `num_canonical_nodes` 弹性锚点，全局样本序与集群拓扑无关，换节点数可续训。
-    *   **三维 World 拓扑**：node × rank × worker，`num_workers>0` 时每个 worker 自动拿到互斥 shard 子集（reader 按 fork 惰性重建）。
-    *   **开箱即用生态**：`StreamingDataset(IterableDataset)` + `MegadataDataLoader(DataLoader)`，HF Trainer / Lightning 直接可用。
+* **Dual packing engine**
+  * **SFT mode**: native Jinja rendering of HuggingFace ChatML-style templates,
+    a document-aware 2-D bin-packing algorithm, precise `-100` masking, and
+    `cu_seqlens` output that plugs straight into FlashAttention-2 varlen
+    (no cross-document attention leakage).
+  * **PT mode**: greedy packing that concatenates pretraining corpora into a
+    seamless token stream to maximise MFU. The stream never loses or duplicates
+    a token; if your loop computes loss over the whole `(B, S)` tile, use
+    `cu_seqlens` to cut the EOS padding at the tail, or run varlen attention.
+  * ⚠️ **Long PT documents are split across batches.** A document longer than
+    `batch_size × max_seq_len` is laid out over several consecutive batches, and
+    each piece becomes its own `cu_seqlens` segment — no data is lost, but under
+    varlen training the **cross-batch context is silently cut**. The builder
+    aggregates a WARN and records `global_stats.split_docs` / `split_tokens` in
+    `index.json`; the loader warns again. Mitigation: raise `max_seq_len` until
+    it covers the vast majority of documents.
 
-## 📦 安装与编译 (Installation)
+* **Zero-copy FFI**: a purpose-built **DLPack C ABI** plus the
+  **Arrow C Data Interface** hand Rust heap buffers to PyTorch tensors in
+  $O(1)$ time. No matter how large the batch, Python never copies a single byte.
 
-需要 Rust 1.85+（`edition = "2024"`）、Python 3.8+ 与 `maturin`。
-`bbpe_rs`（分词器）是 crates.io 上的正式依赖，`cargo` 自动拉取，无需手动放置：
+* **Temperature mixer for multiple sources**: mount Code / Math / Web streams at
+  runtime; **temperature scaling** samples them concurrently underneath so you
+  can steer the knowledge mix smoothly instead of shuffling statically.
+
+* **Deterministic sharding and second-level resumption (MMP protocol)**: no
+  centralised RPC. Thousands of ranks derive shard ownership from a
+  deterministic PRNG with round-robin assignment, so every rank sees the same
+  reproducible shard sequence within an epoch. File offsets and the PRNG state
+  are captured too, so a crashed job **resumes in milliseconds** and replays the
+  exact cross-source sampling order.
+
+* **Production control plane**
+  * **Shard aggregation**: one shard file holds N batches (~128 MB/shard by
+    default), cutting file count from "one per batch" to a few hundred; the
+    loader hard-checks `shards >= world_size` so no rank idles.
+  * **Integrity**: every shard is read back and sha256-ed into `index.json`.
+    Cloud downloads are atomic (`.tmp` + rename), verified after download,
+    re-downloaded on failure, retried with jittered exponential backoff,
+    de-duplicated across processes (flock) and bounded by an LRU cache
+    (`MEGADATA_CACHE_LIMIT`). **Local datasets are not verified by default**
+    (zero overhead); opt in with `MEGADATA_VERIFY_LOCAL=1` or `=sample:P`
+    (results cached by size+mtime, so each file is hashed once).
+  * **Errors are never silent**: I/O, decompression and corruption failures raise
+    `OSError` with the shard name and batch index instead of looking like
+    "end of data" or hanging in an infinite retry. Local reads get **bounded
+    retries** (2 attempts, 50/200 ms backoff). EOF and user cancellation still
+    end normally, and the reader stays alive after EOF so resumption can seek.
+  * **Prefetch-thread panics surface too**: the prefetch thread is wrapped in
+    `catch_unwind`, so any panic (including lock poisoning) becomes a fatal
+    error at the consumer rather than a truncated epoch.
+  * **Optional compression**: PT raw streams use per-batch zstd frames
+    (`Zstd-MDS`, preserving O(1) random access) — **on by default** (real-corpus
+    benchmark: 42% of original size on a 151k vocab, 629 MB/s decompression,
+    +103 µs random access; disable with `compression="none"`). SFT uses Arrow
+    IPC's native zstd/lz4 (explicit).
+  * ⚠️ Automatic `batches_per_shard` is computed on **uncompressed** bytes
+    (PT+zstd lands at ~42% of that); plan disk capacity at ~0.42×.
+  * **Prefetch window throttling**: `predownload` caps in-flight batches
+    (default 16), smoothing I/O bursts and bounding prefetch memory.
+  * **Permutation shuffle**: Rust builds a deterministic batch-level permutation
+    from `(seed, epoch)`, shrinking `state_dict` from gigabytes of buffer to a
+    few dozen bytes and making it reproducible across processes.
+  * **Elastic scaling**: `relaxed` partitioning with `num_canonical_nodes`
+    anchors, so global sample order is independent of cluster topology and a job
+    can resume after a resize.
+  * **3-D world topology**: node × rank × worker; with `num_workers > 0` each
+    worker gets a disjoint shard subset (readers rebuilt lazily after fork).
+  * **Drop-in ecosystem**: `StreamingDataset(IterableDataset)` and
+    `MegadataDataLoader(DataLoader)` work with HF Trainer / Lightning as-is.
+
+## Installation
+
+Requires Rust 1.85+ (`edition = "2024"`), Python 3.8+ and `maturin`.
+`bbpe_rs` (the tokenizer) is a regular crates.io dependency and is fetched
+automatically — nothing to place by hand:
 
 ```bash
 pip install maturin pytest torch pyarrow
 maturin develop --release
 ```
 
-想用 `bbpe_tokenizer` 训练/导出自己的分词器时：
+To train or export your own tokenizer with `bbpe_tokenizer`:
 
 ```bash
 pip install "git+https://github.com/hoare211/bbpe_rs@v0.1.0"
 ```
 
-## 📖 极速上手 (Quick Start)
+## Quick Start
 
-### 1. 离线构建极速数据集 (DataBuilder)
-`DataBuilder` 使用 Tokio 异步 IO 和 Rayon 多线程池，瞬间吞噬 JSONL 语料并落盘为极限格式。
+### 1. Build a dataset offline (`DataBuilder`)
+
+`DataBuilder` uses Tokio async I/O and a Rayon thread pool to swallow JSONL
+corpora and write the on-disk format in one pass.
 
 ```python
 from megadata import DataBuilder
 
 builder = DataBuilder(tokenizer_path="./model_tokenizer", max_seq_len=8192)
 
-# 构建 SFT 对话数据集 (落盘为 Arrow IPC 格式)
+# SFT chat dataset (written as Arrow IPC)
 builder.build_dataset(
     input_paths=["data/sft/raw.jsonl"],
     output_dir="data/sft_processed",
     mode="sft",
     template_str="{% for msg in messages %}<|im_start|>{{ msg.role }}\n{{ msg.content }}<|im_end|>\n{% endfor %}",
-    batch_size=16
+    batch_size=16,
 )
 
-# 构建 PT 预训练数据集 (落盘为 Megatron 风格的裸流 Memmap .bin/.idx)
+# PT pretraining dataset (Megatron-style raw-stream .bin/.idx)
 builder.build_dataset(
     input_paths=["data/pt/raw.jsonl"],
     output_dir="data/pt_processed",
     mode="pt",
     batch_size=16,
-    # 可选控制面参数：
-    # batches_per_shard=0   # shard 聚合粒度：0=自动(~128MB/shard)；加载端校验 shard 数 >= world_size
-    # compression="zstd"    # PT 默认 zstd（per-batch frame，Zstd-MDS）；"none" 关闭；SFT 默认不压缩，可传 zstd/lz4
+    # optional control-plane knobs:
+    # batches_per_shard=0   # 0 = auto (~128MB/shard); loader checks shards >= world_size
+    # compression="zstd"    # PT default (per-batch frame, Zstd-MDS); "none" to disable
 )
 ```
 
-### 2. 多源零拷贝加载与训练 (MultiSourceMixLoader)
+### 2. Multi-source zero-copy loading
 
 ```python
 import torch
-from megadata import MultiSourceMixLoader
+from megadata import MixBatchStream
 
-# 启动温度控制多源混采的 DataLoader
-loader = MultiSourceMixLoader(
-    datasets_config=[
-        {"path": "data/pt_processed/index.json"},     # 自动读取总 Tokens 数
-        {"path": "data/sft_processed/index.json"} 
+# temperature-controlled multi-source stream (Code/Math/Web, curriculum, annealing)
+loader = MixBatchStream(
+    [
+        {"path": "data/pt_processed/index.json", "weight": 0.7},
+        {"path": "data/sft_processed/index.json", "weight": 0.3},
     ],
     batch_size=16,
     max_seq_len=8192,
-    world_size=1024, rank=0, # 分布式 DDP 自动感知与隔离
-    temperature=2.0          # 开启温度平滑，提升小语料曝光率
+    world_size=1024,
+    rank=0,                  # DDP topology: no DistributedSampler needed
+    steps_per_epoch=1000,    # required under DDP for a deterministic epoch length
 )
+loader.update_temperature(2.0)   # smooth the mix towards smaller sources
 
-# 断点恢复 (毫秒级 Jump)
+# resume (millisecond-level jump)
 # loader.load_state_dict(checkpoint["megadata_state"])
 
 for batch in loader:
-    # 这里的 Tensor 内存直接映射自 Rust，0 开销！
+    # tensors map Rust memory directly — zero copies
     input_ids = batch["input_ids"].cuda()
-    
-    # 送入模型
+
     loss = model(input_ids).loss
     loss.backward()
 
-# 导出当前极其精确的（文件游标+随机数）状态快照
+# exact snapshot of file cursors + PRNG state
 # checkpoint["megadata_state"] = loader.state_dict()
 ```
 
-## 📚 文档 (Documentation)
+> Single-source training loops should use `BatchStream`; random access for
+> evaluation uses `RandomAccessBatchReader`; HF Trainer / Lightning integration
+> uses `StreamingDataset` + `MegadataDataLoader`. See the usage guide.
 
-- **[`docs/guide/使用指南.md`](docs/guide/使用指南.md)** —— 权威使用说明（构建 → 加载 → 训练集成 → 断点续训 → 调参 → 排障）
-- **[`MIGRATION.md`](MIGRATION.md)** —— v1/v2 → v3 的类名、快照与行为差异迁移表
-- **[`docs/README.md`](docs/README.md)** —— 文档导航
+## Documentation
 
-## 🔁 CI (GitHub Actions)
+- **[`docs/guide/usage.md`](docs/guide/usage.md)** — English quickstart: build → load → train → resume → tune → troubleshoot
+- **[`docs/guide/使用指南.md`](docs/guide/使用指南.md)** — full reference guide (Chinese, most detailed)
+- **[`MIGRATION.md`](MIGRATION.md)** — v1/v2 → v3 rename, snapshot and behaviour changes
+- **[`docs/README.md`](docs/README.md)** — documentation map
 
-`.github/workflows/ci.yml` 四个 job：`lint`（ruff check python/ tests/ tools/）、`docs`
-（`docs_lint.py check` + `self-test`，纯标准库）、`rust-test`（`cargo clippy --all-targets
--p megadata_rs -- -D warnings` + `cargo test --lib`）、`python-test`（maturin 构建 + pytest）。
-`bench.yml` 手动触发吞吐基准，`nightly.yml` 每晚跑全量 proptest fuzz。
+## CI (GitHub Actions)
 
-无需配置任何仓库变量：`bbpe_rs` 走 crates.io 依赖，`cargo` 自动拉取。
+`.github/workflows/ci.yml` runs four jobs: `lint` (ruff over `python/ tests/ tools/`),
+`docs` (`docs_lint.py check` + `self-test`, stdlib only), `rust-test`
+(`cargo clippy --all-targets -p megadata_rs -- -D warnings` + `cargo test --lib`)
+and `python-test` (maturin build + pytest). `bench.yml` runs throughput
+benchmarks on demand; `nightly.yml` runs the full proptest fuzz suite nightly.
 
-## 🧪 工业级质量保证 (Quality Defense)
-本项目配备了严苛的四维测试矩阵（`tests/` 目录）：
-1. **端到端对齐 (E2E Parity)**：证明 FlashAttention 拓扑不漏一条数据。
-2. **分布式隔离 (Distributed Integrity)**：证明多 Rank 下数据严格互斥。
-3. **断点续训时空检验 (Time-Travel)**：证明多源混采打断后重启，数据字节与伪随机数抽样顺序 $100\%$ 对齐。
-4. **内存泄漏压测 (Memory Leak Test)**：经过高频 C FFI 跨语言通信与 Python GC 压力测试，证明无任何内存泄漏。
+No repository variables are required: `bbpe_rs` comes from crates.io.
 
-## 🤝 贡献 (Contributing)
+## Quality Defense
 
-欢迎 issue 与 PR，提交前请读 [`CONTRIBUTING.md`](CONTRIBUTING.md)（含本地自检命令）。
-安全问题请走 [`SECURITY.md`](SECURITY.md) 的私下渠道。
+Four test dimensions back the claims above (see `tests/`):
 
-## 📄 许可证 (License)
+1. **E2E parity** — the FlashAttention topology drops no document.
+2. **Distributed integrity** — ranks and workers are strictly disjoint.
+3. **Time travel** — after an interrupt/restart, byte-level content and the
+   PRNG sampling order match 100%.
+4. **Memory leaks** — high-frequency C FFI traffic and Python GC pressure leak
+   nothing.
 
-本项目以 [MIT](LICENSE) 许可发布。
+## Contributing
 
-## 🙏 致谢
+Issues and PRs are welcome — please read [`CONTRIBUTING.md`](CONTRIBUTING.md)
+(local self-check commands included). For security reports use the private
+channel in [`SECURITY.md`](SECURITY.md).
 
-分词能力由姊妹项目 [bbpe_rs](https://github.com/hoare211/bbpe_rs)（Rust BPE 分词器训练器/编码器）提供；
-`object_store` / `arrow` / `pyo3` / `tokio` / `rayon` 等上游项目构成了本引擎的基础设施。
+## License
+
+Released under the [MIT](LICENSE) license.
+
+## Acknowledgements
+
+Tokenization is provided by the sister project
+[bbpe_rs](https://github.com/hoare211/bbpe_rs) (a Rust BPE tokenizer
+trainer/encoder). `object_store`, `arrow`, `pyo3`, `tokio` and `rayon` form the
+infrastructure this engine is built on.

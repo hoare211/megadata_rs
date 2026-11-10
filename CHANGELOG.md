@@ -26,6 +26,8 @@
 - **多模态扩展**：图像/音频/视频 sidecar（`col_img_blob` / `col_img_rec` / `mm_cu`），
   音视频时间对齐，tar/parquet 源读取。
 - **文档级旁路列**：`doc_ids` / `loss_weights` 零拷贝透出（i32 / f16）。
+- **文档**：英文 `README.md` + 中文 `README.zh-CN.md`；英文上手文档
+  `docs/guide/usage.md`，完整参考 `docs/guide/使用指南.md`。
 - **工具链**：`tools/verify/` 九阶段端到端验收脚本、`bench/throughput.py`、
   `bench/compression_bench.py`、`bench/compare_baselines.py`、`tools/docs_lint.py`。
 

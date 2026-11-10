@@ -546,7 +546,21 @@ class _EngineBase:
 # 1. BatchStream：单源流式（epoch-per-iter）
 # ============================================================
 class BatchStream(_EngineBase):
-    """单源流式加载器（训练主力）。
+    """Single-source streaming loader — the main training loop entry point.
+
+    One ``for`` loop is exactly one epoch; the batch permutation is derived from
+    ``(seed, epoch)``, so iteration order is reproducible across processes and
+    across restarts.::
+
+        loader = BatchStream("out/sft/index.json", batch_size=16, max_seq_len=8192,
+                             world_size=8, rank=rank)
+        for batch in loader:
+            train_step(batch)
+
+    Shards are assigned deterministically from ``(seed, epoch, topology)``; do not
+    wrap this in ``torch.utils.data.DistributedSampler``.
+
+    单源流式加载器（训练主力）。
 
     ```python
     for epoch in range(3):        # 轮数谁用谁数
@@ -780,6 +794,19 @@ class BatchStream(_EngineBase):
         return self._epoch, pos
 
     def state_dict(self) -> Dict[str, Any]:
+        """Return an O(1)-restorable snapshot of the reading position.
+
+        The snapshot is tiny (a few dozen bytes): ``schema`` / ``seed`` / ``epoch``
+        / ``in_epoch_pos`` / ``manifest_fingerprint`` / ``topology``. The batch
+        permutation is recomputed from ``(seed, epoch)`` instead of being stored.
+
+        Returns:
+            dict: JSON-serialisable state, safe to ``torch.save`` inside a checkpoint.
+
+        Note:
+            When the cursor sits at the end of an epoch, the snapshot normalises to
+            ``(epoch + 1, 0)`` so restoring never seeks past the end.
+        """
         self._ensure_open()
         state = self._base_state()
         epoch, pos = self._next_position()
@@ -790,6 +817,21 @@ class BatchStream(_EngineBase):
         return state
 
     def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """Restore a snapshot produced by :meth:`state_dict`.
+
+        The next ``next()`` call yields the batch right after the checkpointed
+        position; stale prefetches are discarded. The snapshot's ``epoch``
+        overrides the constructor argument.
+
+        Args:
+            state: dict previously returned by ``state_dict()``.
+
+        Raises:
+            RuntimeError: called while an iteration session is active, or the
+                snapshot schema is newer than this build.
+            ValueError: manifest fingerprint or topology mismatch (the dataset was
+                rebuilt or the world topology changed under a non-elastic setup).
+        """
         self._ensure_open()
         if self._active_session:
             raise RuntimeError("cannot load_state_dict during an active iteration session: effect ordering would be undefined (fail loudly rather than leave silent ambiguity)")
@@ -829,7 +871,22 @@ class BatchStream(_EngineBase):
 # 2. MixBatchStream：多源加权混采（双模式轮长）
 # ============================================================
 class MixBatchStream(_EngineBase):
-    """多源加权混采加载器（PT/SFT 异构、课程学习/退火）。
+    """Multi-source weighted mixer (heterogeneous PT/SFT, curriculum, annealing).
+
+    Two epoch-length modes:
+
+    - ``steps_per_epoch=None`` (natural): the epoch ends when any sampled
+      substream is exhausted; ``len()`` is an upper bound. Under DDP this mode
+      requires ``steps_per_epoch`` — construction performs a
+      communication-free safety check, and ``verify_ddp_consistency()`` gives a
+      definitive collective answer.
+    - ``steps_per_epoch=N`` (deterministic): exactly N batches, substreams wrap.
+
+    Weights come from exactly one source: explicit ``weights=``, a ``weight`` key
+    in each config, or automatic sizing by ``weight_basis``
+    (``"total_tokens"`` default / ``"text_tokens"`` / ``"samples"``).
+
+    多源加权混采加载器（PT/SFT 异构、课程学习/退火）。
 
     两种轮长模式（OD1'）：
     - `steps_per_epoch=None`（自然模式）：被采样的子流耗尽即本轮结束；`len()` 是上界。
@@ -1375,7 +1432,16 @@ class MixBatchStream(_EngineBase):
 
     # ---- P5 ----
     def state_dict(self) -> Dict[str, Any]:
-        """快照。
+        """Snapshot the mixer state (small, O(1) to restore).
+
+        Contains the base stream snapshot plus ``weights`` (effective),
+        ``base_weights`` / ``temperature`` (so annealing resumes without drift),
+        ``steps_yielded``, per-substream cursors and the PRNG ``rng_word_pos``.
+
+        Returns:
+            dict: JSON-serialisable state, safe to ``torch.save``.
+
+        快照。
 
         `weights` 为**生效权重**（兼容既有消费方）；`base_weights` + `temperature`
         为 A2 的意图层与算子层（续训后退火口径不漂移，旧快照按 `weights` 当 base 兜底）。

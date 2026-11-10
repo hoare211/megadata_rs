@@ -34,7 +34,23 @@ def _identity_collate(batch):
 
 
 class StreamingDataset(IterableDataset):
-    """megadata 流式数据集（`torch.utils.data.IterableDataset` 协议）。
+    """megadata streaming dataset implementing ``torch.utils.data.IterableDataset``.
+
+    Meant to be iterated through :class:`MegadataDataLoader`::
+
+        ds = StreamingDataset("out/sft/index.json", batch_size=16, max_seq_len=8192)
+        dl = MegadataDataLoader(ds, num_workers=4)
+        trainer.fit(model, train_dataloaders=dl)
+
+    Lifecycle: ``release()`` drops the current read head (idempotent, not
+    terminal — the next ``__iter__`` rebuilds it); ``close()`` is terminal;
+    ``with ds:`` calls ``close()`` on exit.
+
+    Iterating the dataset directly (``for b in ds:``) bypasses epoch advancement,
+    so every epoch would replay the same order — always go through
+    ``MegadataDataLoader``.
+
+    megadata 流式数据集（`torch.utils.data.IterableDataset` 协议）。
 
     ```python
     ds = StreamingDataset(index_json_path, batch_size=..., max_seq_len=...)

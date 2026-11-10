@@ -636,7 +636,39 @@ class DataBuilder:
         modality_encoder: Optional[Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]] = None,
         **legacy: Any,
     ):
-        """全能构建引擎（**推荐**传 `config=BuildConfig(...)`；旧扁平签名仍可用，带弃用告警）。
+        """Build a dataset from JSONL sources and write it into ``output_dir``.
+
+        Recommended form::
+
+            cfg = BuildConfig(input_paths=["a.jsonl"], output_dir="out/sft", mode="sft",
+                              template_str=TEMPLATE, batch_size=16)
+            summary = builder.build_dataset(cfg, progress_cb=print)
+
+        Args:
+            config: A :class:`BuildConfig` value object (preferred). Omit it to use
+                the legacy flat keyword form, which still works but emits a
+                ``DeprecationWarning``.
+            progress_cb: Optional callable invoked roughly every 100 ms with a
+                progress ``dict``.
+            modality_encoder: Optional callback mapping raw multimodal records to
+                encoded ones (VLM builds).
+
+        Returns:
+            dict: build summary — ``output_dir`` / ``mode`` / ``batch_size`` /
+            ``compression`` etc. plus manifest-derived ``manifest``,
+            ``total_batches``, ``total_shards``, ``total_tokens``, ``max_seq_len``
+            (``manifest: None`` plus ``manifest_error`` if reading it failed).
+
+        Raises:
+            ValueError: invalid ``mode``, a mode-irrelevant argument was supplied
+                (e.g. ``eos=`` with ``mode="sft"``), or the build produced no shards.
+            OSError: I/O failure while reading inputs or writing shards.
+
+        Note:
+            ``batch_size`` and ``max_seq_len`` are frozen into the shards; loaders
+            must be constructed with the same values or they raise immediately.
+
+        全能构建引擎（**推荐**传 `config=BuildConfig(...)`；旧扁平签名仍可用，带弃用告警）。
 
         ```python
         cfg = BuildConfig(input_paths=["a.jsonl"], output_dir="out/sft", mode="sft",
