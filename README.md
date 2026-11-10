@@ -37,7 +37,7 @@
 ## 📦 安装与编译 (Installation)
 
 需要 Rust 1.85+（`edition = "2024"`）、Python 3.8+ 与 `maturin`。
-`bbpe_rs`（分词器）由 `Cargo.toml` 的 git tag 依赖自动拉取，无需手动放置：
+`bbpe_rs`（分词器）是 crates.io 上的正式依赖，`cargo` 自动拉取，无需手动放置：
 
 ```bash
 pip install maturin pytest torch pyarrow
@@ -127,7 +127,7 @@ for batch in loader:
 -p megadata_rs -- -D warnings` + `cargo test --lib`）、`python-test`（maturin 构建 + pytest）。
 `bench.yml` 手动触发吞吐基准，`nightly.yml` 每晚跑全量 proptest fuzz。
 
-无需配置任何仓库变量：`bbpe_rs` 由 cargo 通过 git tag 自动拉取。
+无需配置任何仓库变量：`bbpe_rs` 走 crates.io 依赖，`cargo` 自动拉取。
 
 ## 🧪 工业级质量保证 (Quality Defense)
 本项目配备了严苛的四维测试矩阵（`tests/` 目录）：

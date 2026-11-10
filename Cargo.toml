@@ -8,6 +8,8 @@ repository = "https://github.com/hoare211/megadata_rs"
 readme = "README.md"
 keywords = ["llm", "dataset", "data-loader", "zero-copy", "pyo3"]
 categories = ["development-tools", "science"]
+# 语料 fixture 只服务 Python 侧 verify/bench（cargo package 8.7MB → 1.9MB）
+exclude = ["data/"]
 
 [lib]
 name = "megadata_rs"
@@ -25,9 +27,9 @@ python-extension = ["pyo3/extension-module"]
 pyo3-tests = ["pyo3/auto-initialize"]
 
 [dependencies]
-# 1. 底层分词库：直接链接 bbpe_rs 获取切词能力（git tag 锁定，cargo 自动拉取）
+# 1. 底层分词库：直接链接 bbpe_rs 获取切词能力（crates.io 发布版，版本锁定）
 #    关闭 default features 以不引入其 pyo3 Python 扩展绑定（本 crate 只用 rlib 部分）。
-bbpe_rs = { git = "https://github.com/hoare211/bbpe_rs", tag = "v0.1.0", default-features = false }
+bbpe_rs = { version = "0.1.0", default-features = false }
 
 # 2. Python 通信桥梁
 # 不在此处启用 extension-module（改由 python-extension 特性携带）：

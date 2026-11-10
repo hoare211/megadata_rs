@@ -12,7 +12,7 @@ env -u CONDA_PREFIX VIRTUAL_ENV=$PWD/.venv uv pip install maturin "torch>=2.0" "
 env -u CONDA_PREFIX VIRTUAL_ENV=$PWD/.venv maturin develop --release
 ```
 
-`bbpe_rs` 由 `Cargo.toml` 的 git tag 依赖自动拉取，无需手工放置。
+`bbpe_rs` 是 crates.io 依赖（`Cargo.toml` 版本锁定），`cargo` 自动拉取，无需手工放置。
 需要用自己的分词器跑测试时，设置 `BBPE_TOKENIZER_DIR=/path/to/tokenizer`；
 不设置时 `tests/conftest.py` 会现训一个迷你分词器用来兜底。
 

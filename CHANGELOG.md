@@ -33,4 +33,4 @@
 
 - 接口协议为 **v3**（相对 v1/v2 完全重置，旧类名不保留别名）。
   迁移映射见 [MIGRATION.md](MIGRATION.md)。
-- 构建依赖 `bbpe_rs` v0.1.0（git tag 锁定），cargo 自动拉取。
+- 构建依赖 `bbpe_rs` v0.1.0（crates.io），cargo 自动拉取。
