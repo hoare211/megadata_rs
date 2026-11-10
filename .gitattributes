@@ -1,0 +1,11 @@
+* text=auto eol=lf
+
+# 二进制数据（禁止换行符转换与 diff）
+*.bin binary
+*.idx binary
+*.cu binary
+*.arrow binary
+*.parquet binary
+*.zst binary
+*.so binary
+*.pyc binary

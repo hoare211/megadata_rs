@@ -1,0 +1,74 @@
+name: Bench
+
+# 手动触发的性能基准：让 README 的吞吐宣称可复现。
+# 数据集用与 tests/conftest.py 同款的"迷你分词器"现训现建——不依赖任何入库外产物；
+# 机器规格直接影响绝对数字，故结果只作趋势/回归对比，artifact 保留运行环境元数据。
+on:
+  workflow_dispatch:
+    inputs:
+      steps:
+        description: "测量步数"
+        default: "500"
+      batch-size:
+        description: "batch_size"
+        default: "8"
+      max-seq-len:
+        description: "max_seq_len"
+        default: "512"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  throughput:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - name: 建 venv 并安装 maturin
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip install --python .venv/bin/python maturin
+      - name: 安装 bbpe_tokenizer（现训迷你分词器用）
+        continue-on-error: true
+        run: uv pip install --python .venv/bin/python "git+https://github.com/hoare211/bbpe_rs@v0.1.0"
+      - name: 构建 megadata 扩展
+        env:
+          VIRTUAL_ENV: ${{ github.workspace }}/.venv
+        run: .venv/bin/maturin develop --release
+      - name: 训练迷你分词器并构建基准数据集
+        env:
+          VIRTUAL_ENV: ${{ github.workspace }}/.venv
+        run: |
+          .venv/bin/python - <<'PY'
+          import os, sys
+          sys.path.insert(0, "tests")
+          import conftest  # 触发迷你分词器兜底（TOKENIZER_PATH 注入）
+          from _scenario_kit import build_dataset, pt_records
+
+          idx = build_dataset("bench_ds", pt_records(600), "pt",
+                              max_seq_len=512, batch_size=8, batches_per_shard=8)
+          print(f"::notice::bench dataset ready: {idx}")
+          with open("bench_ds/index_path.txt", "w") as f:
+              f.write(idx)
+          PY
+      - name: 运行吞吐基准
+        run: |
+          IDX=$(cat bench_ds/index_path.txt)
+          .venv/bin/python bench/throughput.py --index "$IDX" \
+            --steps "${{ github.event.inputs.steps || '500' }}" \
+            --batch-size "${{ github.event.inputs.batch-size || '8' }}" \
+            --max-seq-len "${{ github.event.inputs.max-seq-len || '512' }}" \
+            | tee bench_result.txt
+      - name: 上传基准结果
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-result
+          path: |
+            bench_result.txt
+            bench_ds/index_path.txt
+          retention-days: 30

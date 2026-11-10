@@ -1,0 +1,102 @@
+[package]
+name = "megadata_rs"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+description = "The Ultimate LLM Data Pipeline Engine — zero-copy, Rust-native dataset builder and loader for LLM/VLM training"
+repository = "https://github.com/hoare211/megadata_rs"
+readme = "README.md"
+keywords = ["llm", "dataset", "data-loader", "zero-copy", "pyo3"]
+categories = ["development-tools", "science"]
+
+[lib]
+name = "megadata_rs"
+crate-type = ["cdylib", "rlib"] # 编译为 Python 扩展库 (cdylib) 和 Rust 库 (rlib)
+
+[features]
+default = []
+# 供 maturin 使用的 Python 扩展构建特性（pyproject [tool.maturin] 已启用）：
+# extension-module 开启时不链接 libpython，只能作为 Python 扩展加载。
+python-extension = ["pyo3/extension-module"]
+# Python 层 Rust 单测（ffi_dlpack capsule 全链路）：链接 libpython 并自动初始化
+# 解释器。跑法：cargo test --features pyo3-tests
+# 注：链接的是 PYO3_PYTHON 指向解释器的 libpython，conda 环境需带
+# LD_LIBRARY_PATH=<env>/lib（运行时动态查找）。
+pyo3-tests = ["pyo3/auto-initialize"]
+
+[dependencies]
+# 1. 底层分词库：直接链接 bbpe_rs 获取切词能力（git tag 锁定，cargo 自动拉取）
+#    关闭 default features 以不引入其 pyo3 Python 扩展绑定（本 crate 只用 rlib 部分）。
+bbpe_rs = { git = "https://github.com/hoare211/bbpe_rs", tag = "v0.1.0", default-features = false }
+
+# 2. Python 通信桥梁
+# 不在此处启用 extension-module（改由 python-extension 特性携带）：
+# 否则 cargo test 的测试二进制不链接 libpython，所有 with_gil 测试都无法运行。
+pyo3 = { version = "0.28.3" }
+
+# 3. 异步与高并发基建（显式版本范围，与 pyo3/serde 的风格一致，提升可复现性）
+tokio = { version = "1", features = ["full"] }  # 异步 IO
+rayon = "1"                                     # CPU 密集型计算池
+flume = "0.12"                                  # 极速无锁 MPMC 队列 (连结 Tokio 和 Rayon)
+
+# 4. JSON 与 模板渲染引擎
+sonic-rs = "0.5"
+minijinja = "2"
+tracing-subscriber = "0.3.23"
+tracing = "0.1.44"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+arrow = { version = "59.0.0", features = ["pyarrow", "ffi", "ipc_compression"] }
+#rand = "*"
+# 固定 0.9：rand_chacha 0.9 与之共享 rand_core 0.9（rand 0.10 会造成 trait 不兼容）
+rand = { version = "0.9", features = ["std"] }
+# 直接依赖 rand_chacha：StreamMixer 需要 ChaCha 的 word_pos/set_word_pos
+# 实现断点续训 O(1) 恢复（StdRng 不透出该 API）。
+rand_chacha = "0.9"
+proptest = "1.11.0"
+
+# 控制面基建（借鉴 streaming）：
+# zstd - PT 裸流 per-batch frame 压缩（StorageFormat::ZstdMDS）
+#       开启 zstdmt feature：仅为后续多线程压缩准备依赖（0.5 Tier-0 快赢项）。
+#       ⚠️ 注意：当前唯一压缩调用点是 encode_all（单线程 API），feature 本身不改变
+#       任何行为；真正"解锁多线程"需把该调用切到 mt 压缩 API 并调批粒度——按 P0
+#       剖析结果再接线，此前不要据本条声称吞吐收益。
+#       fs2  - 缓存下载跨进程文件锁（single-flight，同节点多 rank 去重下载）
+zstd = { version = "0.13", features = ["zstdmt"] }
+fs2 = "0.4"
+# bytemuck — 替代 MemmapWriter 中的 unsafe 字节重解释（&[i32] → &[u8]，零拷贝）；
+# extern_crate_alloc 特性提供 Vec 的零拷贝降宽转换（try_cast_vec，DLPack 基础层使用）
+bytemuck = { version = "1", features = ["extern_crate_alloc"] }
+# half — f16 位型（loss_weights 旁路列走 DLPack 的 float16 dtype，标准库无 f16）
+half = "2"
+# 5. (预留) Arrow 内存格式支持 (Phase 2 使用)
+# arrow = { version = "*", features = ["pyarrow", "ffi"] }
+
+# 云原生存储支持
+object_store = { version = "0.13", features = ["aws", "gcp", "azure", "http"] }
+# GetResult::into_stream 消费需要 StreamExt（object_store 传递依赖，直连声明零开销）
+futures-util = "0.3"
+url = "2"
+bytes = "1.11"
+hex = "0.4"
+sha2 = "0.11"
+
+reqwest = { version = "0.13", features = ["blocking"] }
+
+# P4（待网络可用时启用）：webdataset tar 分片读取 + gzip 流式解压 + parquet 源读取。
+# tar = "0.4"
+# flate2 = "1"   # 默认 miniz_oxide 后端（纯 Rust，无 C 依赖）
+# parquet = { version = "59.0.0", features = ["arrow"] }   # 与 arrow 同 minor 避免跨 crate 类型不兼容
+
+[lints.rust]
+# DLPack capsule 的零拷贝生命周期绑定自定义 deleter，暂不迁移 pyo3 Bound API
+deprecated = "allow"
+
+[lints.clippy]
+# FFI 绑定与构建入口的参数天然较多（pyo3 new / build_dataset）
+too_many_arguments = "allow"
+
+[profile.release]
+lto = "fat"           # 开启极限链接期优化
+codegen-units = 1     # 提升极致性能
+opt-level = 3

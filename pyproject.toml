@@ -1,0 +1,55 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "megadata"
+version = "0.2.0"        # 唯一版本来源（Cargo.toml 的 package.version 与之保持一致）
+description = "The Ultimate LLM Data Pipeline Engine"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "hoare211" }]
+keywords = ["llm", "dataset", "data-loader", "zero-copy", "megatron"]
+requires-python = ">=3.8"
+dependencies = [
+    "torch>=2.0.0",
+    "pyarrow>=14.0.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/hoare211/megadata_rs"
+Repository = "https://github.com/hoare211/megadata_rs"
+Issues = "https://github.com/hoare211/megadata_rs/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "moto[server]>=5",
+    "zstandard>=0.22",
+    "numpy",
+    "ruff>=0.6",
+    # 第三方分词器接入测试：本地训练小 BPE，构造"两路径都认"的等价分词器
+    "tokenizers>=0.20",
+]
+# 可选：交叉验证 PT 的 split_special_tokens 语义（T3），不装则跳过该项
+hf = ["transformers>=4.45"]
+
+[tool.maturin]
+features = ["python-extension"]
+module-name = "megadata._rust"
+python-source = "python"
+# v3：随包提供类型信息（配合 py.typed，让 IDE/mypy 能读到 Literal/签名）
+include = [{ path = "python/megadata/py.typed", format = "wheel" }]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 注意：不放 addopts = "-q" 之类，保持 CI 输出默认（便于排查）
+
+[tool.ruff]
+line-length = 120
+target-version = "py38"     # python-source 声明 >=3.8；新代码用 from __future__ import annotations
+
+[tool.ruff.lint]
+# 先只卡语法错误 + pyflakes（未定义名 / 未用导入 / 重复定义）：
+# 存量代码风格与新规则集差距大，全量规则会大面积爆，逐步收紧。
+select = ["E9", "F"]

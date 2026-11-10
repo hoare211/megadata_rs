@@ -1,0 +1,46 @@
+# ---------- Rust ----------
+/target
+Cargo.lock
+*.rs.bk
+
+# ---------- Python / 构建产物 ----------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.so
+*.egg-info/
+/dist
+/build
+*.whl
+.maturin/
+
+# ---------- 测试与工具缓存 ----------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ---------- 数据集与生成物 ----------
+# 仓库只保留两份小样本语料，其余本地语料一律不入库
+data/*
+!data/pretrain_t2t_mini.jsonl
+!data/sft_t2t_mini.jsonl
+tokenizer_output/
+dataset_output/
+bench/out/
+bench_ds/
+tools/verify/out/
+tools/verify/edge/
+tools/verify/builds.json
+
+# ---------- 编辑器 / 工具 ----------
+.idea/
+.vscode/
+.qoder/
+.codebuddy/
+.DS_Store
+
+# ---------- 杂项 ----------
+fix.md

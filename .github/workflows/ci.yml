@@ -1,0 +1,86 @@
+name: CI
+
+# 触发：任何分支的 push / PR。
+on:
+  push:
+  pull_request:
+
+# 同一分支的旧 run 被新 run 取代时取消，省配额
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================
+  # lint：ruff（纯 Python，最快反馈）
+  # ============================================================
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: ruff check
+        run: uvx ruff check python/ tests/ tools/
+
+  # ============================================================
+  # docs：文档链接 / 顶层结构 / 索引同步（纯标准库，无外部依赖）
+  # ============================================================
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: docs lint
+        run: python3 tools/docs_lint.py check
+      - name: docs lint self-test
+        run: python3 tools/docs_lint.py self-test
+
+  # ============================================================
+  # rust-test：clippy -D warnings + 单测
+  # 注：bbpe_rs 由 Cargo.toml 的 git tag 依赖自动拉取，无需额外 checkout。
+  # ============================================================
+  rust-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy（仅本 crate；bbpe_rs 的 warning 不归本仓库管）
+        # --all-targets：连测试代码一起 lint（默认只查非测试目标，#[cfg(test)] 里的
+        # clippy 命中会被漏掉）
+        run: cargo clippy --all-targets -p megadata_rs -- -D warnings
+      - name: cargo test
+        # proptest fuzz 单测约 8 分钟，CI 先 skip（nightly 覆盖全量）；
+        # 本地全量：去掉 `--skip fuzz_document_aware`，或用 PROPTEST_CASES=128 压缩时间。
+        run: cargo test --lib -- --skip fuzz_document_aware
+
+  # ============================================================
+  # python-test：maturin 构建扩展 + pytest
+  # ============================================================
+  python-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - name: 建 venv 并安装 maturin
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip install --python .venv/bin/python maturin
+      - name: 安装 bbpe_tokenizer（可选）
+        # 供 tests/conftest.py 现训迷你分词器；失败时相关用例自动 pytest.skip，不阻塞构建。
+        continue-on-error: true
+        run: uv pip install --python .venv/bin/python "git+https://github.com/hoare211/bbpe_rs@v0.1.0"
+      - name: 构建 megadata 扩展
+        env:
+          VIRTUAL_ENV: ${{ github.workspace }}/.venv
+        run: .venv/bin/maturin develop --release
+      - name: 安装测试依赖（pyproject [dev]）
+        run: uv pip install --python .venv/bin/python "pytest>=8" "moto[server]>=5" zstandard numpy
+      - name: pytest
+        run: .venv/bin/python -m pytest tests/
