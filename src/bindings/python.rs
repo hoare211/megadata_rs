@@ -353,7 +353,7 @@ impl PyDataBuilder {
             else {
                 return Ok(None);
             };
-            Ok(Some(tok.encode_with_types(text, &HashSet::new(), true).ids))
+            Ok(Some(tok.encode(text, &HashSet::new(), true).ids))
         })
     }
 

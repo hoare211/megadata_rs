@@ -1715,7 +1715,7 @@ fn validate_turn_markers_bbpe(
         if marker.is_empty() {
             continue;
         }
-        let enc = tokenizer.encode_with_types(marker, &HashSet::new(), true);
+        let enc = tokenizer.encode(marker, &HashSet::new(), true);
         if enc.ids.len() != 1 {
             return Err(format!(
                 "turn marker {marker:?} encodes to {} tokens ({:?}) via the tokenizer, but it must be exactly 1.\
@@ -2395,7 +2395,7 @@ pub async fn run_offline_builder_pipeline(
                         match template_engine.render_chat(&json_str, false) {
                             Ok(rendered) => {
                                 let enc =
-                                    tokenizer.encode_with_types(&rendered, &HashSet::new(), true);
+                                    tokenizer.encode(&rendered, &HashSet::new(), true);
                                 // F7 注入检测（只计数 + 限频 WARN，不丢弃样本）
                                 check_turn_injection(
                                     &enc.tokens,

@@ -7,7 +7,7 @@ pub(crate) mod source;
 mod template;
 mod writer;
 
-use bbpe_rs::tokenizer::SftEncoding;
+use bbpe_rs::tokenizer::Encoding;
 
 /// 构建管线内流转的 token 化文档（方案 §4.1 / D5：中间契约最小集）。
 ///
@@ -29,8 +29,8 @@ pub struct TokenizedDoc {
     pub uid: u32,
 }
 
-impl From<SftEncoding> for TokenizedDoc {
-    fn from(enc: SftEncoding) -> Self {
+impl From<Encoding> for TokenizedDoc {
+    fn from(enc: Encoding) -> Self {
         Self {
             ids: enc.ids,
             tokens: enc.tokens,
